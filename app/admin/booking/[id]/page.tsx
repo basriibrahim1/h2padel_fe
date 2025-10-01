@@ -1,26 +1,46 @@
-// app/admin/[id]/page.tsx (Halaman Edit)
+// app/admin/[id]/page.tsx
 
 "use client";
 
 import { useEffect, useState, FormEvent } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
+import { toast } from "sonner";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
-// Interface untuk field yang BOLEH di-edit Admin
+// --- TYPES ---
+interface CourtData {
+  id: number;
+  name: string;
+  address: string;
+  maps_url: string;
+  fixed_price: number;
+}
+interface PersonData {
+  id: string;
+  name: string;
+  phone: string;
+  fixed_fee?: number;
+}
 interface BookingUpdate {
-  court_id: number;
-  client_id: string; // Foreign Key ID dari tabel clients
+  id?: number;
+  court_id: number | "";
+  court_name: string;
+  court_address: string;
+  court_maps_url: string;
+  client_id: string;
   client_name: string;
   client_phone: string;
-  coach_id: string; // Foreign Key ID dari tabel coaches
+  coach_id: string;
   coach_name: string;
   coach_phone: string;
   start_time: string;
+  duration: number;
   final_court_price: number;
   final_coach_fee: number;
   is_with_photography: boolean;
@@ -30,22 +50,28 @@ interface BookingUpdate {
   notes: string;
 }
 
-// Interface untuk data mentah saat fetch
-interface BookingDataRaw extends BookingUpdate {
-  id: number;
-  created_at: string;
-  updated_at: string;
-  total_price: number;
-}
-
-// Interface untuk data dropdown dari clients/coaches (termasuk user_id dari profiles)
-interface PersonData {
-  id: string; // ID dari tabel clients/coaches (Foreign Key di bookings)
-  user_id: string; // ID dari auth.users
-  name: string;
-  phone: string;
-  fixed_fee?: number; // Hanya untuk coach
-}
+// --- INITIAL STATE ---
+const initialBooking: BookingUpdate = {
+  court_id: "",
+  court_name: "",
+  court_address: "",
+  court_maps_url: "",
+  client_id: "",
+  client_name: "",
+  client_phone: "",
+  coach_id: "",
+  coach_name: "",
+  coach_phone: "",
+  start_time: "",
+  duration: 60,
+  final_court_price: 0,
+  final_coach_fee: 0,
+  is_with_photography: false,
+  adult_number: 0,
+  children_number: 0,
+  status: "pending",
+  notes: "",
+};
 
 export default function EditBookingPage() {
   const params = useParams();
@@ -57,169 +83,251 @@ export default function EditBookingPage() {
   const [bookingData, setBookingData] = useState<BookingUpdate | null>(null);
   const [clients, setClients] = useState<PersonData[]>([]);
   const [coaches, setCoaches] = useState<PersonData[]>([]);
+  const [courts, setCourts] = useState<CourtData[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  console.log(coaches);
+  // --- HELPER: find & return autofill fields (robust: accepts number or string)
+  const autofillCourtData = (courtId: number | string | ""): Partial<BookingUpdate> => {
+    if (courtId === "" || courtId === null || courtId === undefined) return {};
+    const idNum = typeof courtId === "number" ? courtId : Number(courtId);
+    const court = courts.find((d) => Number(d.id) === idNum);
+    if (!court) return {};
+    return {
+      court_name: court.name,
+      court_address: court.address,
+      court_maps_url: court.maps_url,
+      final_court_price: Number(court.fixed_price) || 0,
+    };
+  };
 
-  // --- FUNGSI AMBIL DATA DROPDOWN ---
-  const fetchDropdownData = async () => {
-    // Ambil data Clients (Join ke profiles untuk nama dan phone)
-    const { data: clientData } = await supabase.from("clients").select(`
-                id, 
-                user_id,
-                profiles (full_name, phone)
-            `);
+  // --- FETCH DROPDOWNS ---
+  const fetchDropdowns = async () => {
+    try {
+      const [clientRes, coachRes, courtRes] = await Promise.all([
+        supabase.from("clients").select(`id, profiles (full_name, phone)`),
+        supabase.from("coaches").select(`id, fixed_fee, profiles (full_name, phone)`),
+        supabase.from("field_courts").select(`id, name, address, maps_url, fixed_price`),
+      ]);
 
-    if (clientData) {
-      setClients(
-        clientData.map((c: any) => ({
-          id: c.id,
-          user_id: c.user_id,
-          name: c.profiles?.full_name || "N/A",
-          phone: c.profiles?.phone || "",
-        }))
-      );
-    }
+      if (clientRes.error) {
+        console.error("clients error:", clientRes.error);
+        toast.error("Gagal memuat clients");
+      } else if (clientRes.data) {
+        setClients(
+          clientRes.data.map((c: any) => ({
+            id: String(c.id),
+            name: c.profiles?.full_name || "N/A",
+            phone: c.profiles?.phone || "",
+          }))
+        );
+      }
 
-    // Ambil data Coaches (Join ke profiles dan ambil default_fee)
-    const { data: coachData } = await supabase.from("coaches").select(`
-                id, 
-                user_id, 
-                fixed_fee,
-                profiles (full_name, phone)
-            `);
+      if (coachRes.error) {
+        console.error("coaches error:", coachRes.error);
+        toast.error("Gagal memuat coaches");
+      } else if (coachRes.data) {
+        setCoaches(
+          coachRes.data.map((h: any) => ({
+            id: String(h.id),
+            name: h.profiles?.full_name || "N/A",
+            phone: h.profiles?.phone || "",
+            fixed_fee: Number(h.fixed_fee) || 0,
+          }))
+        );
+      }
 
-    if (coachData) {
-      setCoaches(
-        coachData.map((h: any) => ({
-          id: h.id,
-          user_id: h.user_id,
-          name: h.profiles?.full_name || "N/A",
-          phone: h.profiles?.phone || "",
-          fixed_fee: h.fixed_fee || 0,
-        }))
-      );
+      if (courtRes.error) {
+        console.error("courts error:", courtRes.error);
+        toast.error("Gagal memuat courts");
+      } else if (courtRes.data) {
+        // normalize id to number
+        setCourts(
+          courtRes.data.map((d: any) => ({
+            id: Number(d.id),
+            name: d.name,
+            address: d.address,
+            maps_url: d.maps_url,
+            fixed_price: Number(d.fixed_price) || 0,
+          }))
+        );
+      }
+    } catch (err: any) {
+      console.error("fetchDropdowns failed:", err);
+      toast.error("Gagal memuat dropdown data");
     }
   };
 
-  // --- FUNGSI AMBIL DATA BOOKING & INITIAL LOAD ---
-  useEffect(() => {
-    fetchDropdownData();
-
-    if (!bookingId) return;
-
-    const fetchBooking = async () => {
+  // --- FETCH BOOKING ---
+  const fetchBooking = async () => {
+    try {
       const { data, error } = await supabase.from("bookings").select("*").eq("id", bookingId).single();
-
-      setLoading(false);
-
-      if (error) {
-        setError(`Gagal mengambil data booking: ${error.message}`);
-        return;
+      if (error || !data) {
+        console.error("fetchBooking error:", error);
+        throw new Error("Booking tidak ditemukan");
       }
 
-      const { id, created_at, updated_at, total_price, ...editableData } = data as BookingDataRaw;
-
-      const formattedData: BookingUpdate = {
-        ...editableData,
-        start_time: editableData.start_time ? new Date(editableData.start_time).toISOString().slice(0, 16) : "",
-        court_id: Number(editableData.court_id),
-        final_court_price: Number(editableData.final_court_price),
-        final_coach_fee: Number(editableData.final_coach_fee),
-        adult_number: Number(editableData.adult_number),
-        children_number: Number(editableData.children_number),
+      const mapped: BookingUpdate = {
+        ...initialBooking,
+        ...data,
+        court_id: data.court_id !== null && data.court_id !== undefined ? Number(data.court_id) : "",
+        client_id: data.client_id ?? "",
+        client_name: data.client_name ?? "",
+        client_phone: data.client_phone ?? "",
+        coach_id: data.coach_id ?? "",
+        coach_name: data.coach_name ?? "",
+        coach_phone: data.coach_phone ?? "",
+        start_time: data.start_time ? new Date(data.start_time).toISOString().slice(0, 16) : "",
+        duration: data.duration || 0,
+        final_court_price: Number(data.final_court_price) || 0,
+        final_coach_fee: Number(data.final_coach_fee) || 0,
+        adult_number: Number(data.adult_number) || 0,
+        children_number: Number(data.children_number) || 0,
+        is_with_photography: Boolean(data.is_with_photography),
+        status: data.status ?? "pending",
+        notes: data.notes ?? "",
       };
 
-      setBookingData(formattedData);
-    };
+      // Apply autofill if courts already loaded; otherwise effect below will apply after courts load
+      const autofill = autofillCourtData(mapped.court_id);
+      setBookingData({ ...mapped, ...autofill });
+    } catch (err: any) {
+      console.error("fetchBooking failed:", err);
+      toast.error("Gagal memuat booking: " + (err?.message || ""));
+      setBookingData(null);
+    }
+  };
 
-    fetchBooking();
+  // --- INIT: ensure dropdowns are loaded first for reliable autofill ---
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        await fetchDropdowns();
+        await fetchBooking();
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookingId]);
 
-  // --- HANDLER AUTOFILL ---
-  const handleAutofill = (name: "client_id" | "coach_id", value: string) => {
+  // If courts are fetched after booking, ensure autofill runs
+  useEffect(() => {
+    if (!bookingData) return;
+    if (!bookingData.court_id) return;
+
+    const fill = autofillCourtData(bookingData.court_id);
+    if (
+      (fill.court_name && fill.court_name !== bookingData.court_name) ||
+      (fill.court_address && fill.court_address !== bookingData.court_address) ||
+      (fill.court_maps_url && fill.court_maps_url !== bookingData.court_maps_url) ||
+      (typeof fill.final_court_price === "number" && fill.final_court_price !== bookingData.final_court_price)
+    ) {
+      setBookingData((prev) => (prev ? { ...prev, ...fill } : prev));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courts, bookingData?.court_id]);
+
+  // --- HANDLER CHANGE (type-safe) ---
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const target = e.target;
+    const name = target.name;
+    const type = target.type;
+
     setBookingData((prev) => {
       if (!prev) return null;
 
-      let updates: Partial<BookingUpdate> = { [name]: value };
-      const idToMatch = value;
-
-      if (name === "client_id") {
-        const client = clients.find((c) => c.id === idToMatch);
-        if (client) {
-          updates.client_name = client.name;
-          updates.client_phone = client.phone;
-        }
-      } else if (name === "coach_id") {
-        const coach = coaches.find((h) => h.id === idToMatch);
-        if (coach) {
-          updates.coach_name = coach.name;
-          updates.coach_phone = coach.phone;
-          updates.final_coach_fee = coach.fixed_fee || 0;
-        }
+      // checkbox
+      if (type === "checkbox") {
+        const checked = (target as HTMLInputElement).checked;
+        return { ...prev, [name]: checked } as BookingUpdate;
       }
 
-      return { ...prev, ...updates };
+      // select court_id (autofill)
+      if (name === "court_id") {
+        const courtIdStr = (target as HTMLSelectElement).value;
+        const courtIdNum = courtIdStr === "" ? "" : Number(courtIdStr);
+        const autofill = autofillCourtData(courtIdNum);
+        return { ...prev, court_id: courtIdNum as any, ...autofill } as BookingUpdate;
+      }
+
+      // select client_id -> populate name/phone
+      if (name === "client_id") {
+        const val = (target as HTMLSelectElement).value;
+        const client = clients.find((c) => c.id === val);
+        if (client) {
+          return { ...prev, client_id: val, client_name: client.name, client_phone: client.phone } as BookingUpdate;
+        }
+        return { ...prev, client_id: val } as BookingUpdate;
+      }
+
+      // select coach_id -> populate name/phone/fixed_fee -> final_coach_fee
+      if (name === "coach_id") {
+        const val = (target as HTMLSelectElement).value;
+        const coach = coaches.find((c) => c.id === val);
+        if (coach) {
+          return {
+            ...prev,
+            coach_id: val,
+            coach_name: coach.name,
+            coach_phone: coach.phone,
+            final_coach_fee: coach.fixed_fee || 0,
+          } as BookingUpdate;
+        }
+        return { ...prev, coach_id: val } as BookingUpdate;
+      }
+
+      // number inputs
+      if (type === "number") {
+        const raw = (target as HTMLInputElement).value;
+        const num = raw === "" ? 0 : Number(raw);
+        return { ...prev, [name]: num } as BookingUpdate;
+      }
+
+      if (name === "duration") {
+        const raw = (target as HTMLInputElement).value;
+        const num = raw === "" ? 0 : Number(raw);
+        // contoh: simpan dalam menit, tapi input dalam jam
+        return { ...prev, duration: num * 60 } as BookingUpdate;
+      }
+
+      // default: text / textarea / datetime-local
+      const val = (target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value;
+      return { ...prev, [name]: val } as BookingUpdate;
     });
   };
 
-  // --- HANDLER CHANGE UMUM ---
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value, type } = e.target;
-
-    // Cek jika perubahan terjadi pada dropdown (client_id atau coach_id)
-    if (name === "client_id" || name === "coach_id") {
-      handleAutofill(name, value);
-      return;
-    }
-
-    setBookingData((prev) =>
-      prev
-        ? {
-            ...prev,
-            [name]:
-              type === "number" || name === "court_id" || name === "final_court_price" || name === "final_coach_fee" || name === "adult_number" || name === "children_number"
-                ? parseFloat(value) || 0
-                : type === "checkbox"
-                ? (e.target as HTMLInputElement).checked
-                : value,
-          }
-        : null
-    );
-  };
-
-  // --- HANDLER SAVE (UPDATE) ---
+  // --- SAVE HANDLER (with toast) ---
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
     if (!bookingData) return;
 
     setSaving(true);
-    setError(null);
 
-    // Finalisasi data yang akan di-update
-    const dataToUpdate = {
-      ...bookingData,
-      is_with_photography: Boolean(bookingData.is_with_photography),
-    };
+    // remove derived fields
+    const { court_name, court_address, court_maps_url, id: _maybeId, ...payload } = bookingData as BookingUpdate & { id?: number };
 
-    const { error: updateError } = await supabase.from("bookings").update(dataToUpdate).eq("id", bookingId);
-
-    setSaving(false);
-
-    if (updateError) {
-      setError(`Gagal menyimpan perubahan: ${updateError.message}`);
-      return;
+    try {
+      const { error } = await supabase.from("bookings").update(payload).eq("id", bookingId);
+      if (error) {
+        console.error("Update error:", error);
+        toast.error("Gagal menyimpan perubahan: " + error.message);
+      } else {
+        toast.success("Booking berhasil diperbarui!");
+        router.push("/admin/dashboard");
+      }
+    } catch (err: any) {
+      console.error("Unexpected update error:", err);
+      toast.error("Terjadi kesalahan saat menyimpan");
+    } finally {
+      setSaving(false);
     }
-
-    alert("Booking berhasil diperbarui!");
-    router.push("/admin/dashboard");
   };
 
-  if (loading) return <div className="p-6">Loading booking details...</div>;
-  if (error && !bookingData) return <div className="p-6 text-red-500">Error: {error}</div>;
-  if (!bookingData) return <div className="p-6">Booking tidak ditemukan.</div>;
+  // --- UI ---
+  if (loading) return <div className="p-6">Loading data...</div>;
+  if (!bookingData) return <div className="p-6 text-red-500">Booking tidak ditemukan.</div>;
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
@@ -230,83 +338,120 @@ export default function EditBookingPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSave} className="space-y-4">
+            {/* COURT & WAKTU */}
+            <h3 className="font-semibold mt-4">Detail Court & Waktu</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="court_id">Pilih Court</Label>
+                <select id="court_id" name="court_id" value={bookingData.court_id === "" ? "" : String(bookingData.court_id)} onChange={handleChange} className="w-full p-2 border rounded" required>
+                  <option value="">-- Pilih Court --</option>
+                  {courts.map((d) => (
+                    <option key={d.id} value={String(d.id)}>
+                      {d.name} (Rp. {d.fixed_price.toLocaleString("id-ID")})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <Label htmlFor="start_time">Waktu Mulai</Label>
+                <Input id="start_time" name="start_time" type="datetime-local" value={bookingData.start_time} onChange={handleChange} required />
+              </div>
+
+              <div className="col-span-2">
+                <Label htmlFor="court_name">Court Name</Label>
+                <Input id="court_name" name="court_name" value={bookingData.court_name} readOnly disabled className="bg-gray-100" />
+              </div>
+
+              <div className="col-span-1">
+                <Label htmlFor="duration">Duration (menit)</Label>
+                <Input
+                  id="duration"
+                  name="duration"
+                  type="number"
+                  value={bookingData.duration}
+                  onChange={handleChange} // ✅ biar ikut update
+                  min={1} // optional: kasih minimal 30 menit
+                  step={0.5} // optional: biar naik turunnya kelipatan 30 menit
+                  required
+                />
+              </div>
+
+              <div className="col-span-2">
+                <Label htmlFor="court_address">Court Address</Label>
+                <Textarea id="court_address" name="court_address" value={bookingData.court_address} readOnly disabled className="bg-gray-100" />
+              </div>
+
+              <div className="col-span-2">
+                <Label htmlFor="court_maps_url">Maps URL</Label>
+                <Input id="court_maps_url" name="court_maps_url" value={bookingData.court_maps_url} readOnly disabled className="bg-gray-100" />
+              </div>
+            </div>
+
+            {/* BIAYA */}
+            <h3 className="font-semibold mt-4">Detail Biaya</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="final_court_price">Court Price (Rp)</Label>
+                <Input id="final_court_price" name="final_court_price" type="number" value={bookingData.final_court_price} onChange={handleChange} readOnly disabled required />
+              </div>
+              <div>
+                <Label htmlFor="final_coach_fee">Coach Fee (Rp)</Label>
+                <Input id="final_coach_fee" name="final_coach_fee" type="number" value={bookingData.final_coach_fee} onChange={handleChange} readOnly disabled required />
+              </div>
+            </div>
+
+            {/* PENGGUNA */}
             <h3 className="font-semibold mt-4">Detail Pengguna</h3>
             <div className="grid grid-cols-2 gap-4">
-              {/* CLIENT ID DROPDOWN */}
               <div>
                 <Label htmlFor="client_id">Pilih Client</Label>
                 <select id="client_id" name="client_id" value={bookingData.client_id} onChange={handleChange} className="w-full p-2 border rounded">
                   <option value="">-- Pilih Client --</option>
                   {clients.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} ({c.id})
+                      {c.name}
                     </option>
                   ))}
                 </select>
               </div>
-              {/* COACH ID DROPDOWN */}
+
               <div>
                 <Label htmlFor="coach_id">Pilih Coach</Label>
                 <select id="coach_id" name="coach_id" value={bookingData.coach_id} onChange={handleChange} className="w-full p-2 border rounded">
                   <option value="">-- Pilih Coach --</option>
                   {coaches.map((h) => (
                     <option key={h.id} value={h.id}>
-                      {h.name} (Rp. {h.fixed_fee})
+                      {h.name} (Rp. {h.fixed_fee?.toLocaleString("id-ID") || 0})
                     </option>
                   ))}
                 </select>
               </div>
 
-              {/* Client Name (Autofill) */}
               <div>
                 <Label htmlFor="client_name">Client Name</Label>
-                <Input id="client_name" name="client_name" type="text" value={bookingData.client_name} onChange={handleChange} required />
+                <Input id="client_name" name="client_name" type="text" value={bookingData.client_name} readOnly disabled className="bg-gray-100" />
               </div>
-              {/* Coach Name (Autofill) */}
+
               <div>
                 <Label htmlFor="coach_name">Coach Name</Label>
-                <Input id="coach_name" name="coach_name" type="text" value={bookingData.coach_name} onChange={handleChange} required />
+                <Input id="coach_name" name="coach_name" type="text" value={bookingData.coach_name} readOnly disabled className="bg-gray-100" />
               </div>
-              {/* Client Phone (Autofill) */}
+
               <div>
                 <Label htmlFor="client_phone">Client Phone</Label>
-                <Input id="client_phone" name="client_phone" type="tel" value={bookingData.client_phone} onChange={handleChange} />
+                <Input id="client_phone" name="client_phone" type="tel" value={bookingData.client_phone} readOnly disabled className="bg-gray-100" />
               </div>
-              {/* Coach Phone (Autofill) */}
+
               <div>
                 <Label htmlFor="coach_phone">Coach Phone</Label>
-                <Input id="coach_phone" name="coach_phone" type="tel" value={bookingData.coach_phone} onChange={handleChange} />
+                <Input id="coach_phone" name="coach_phone" type="tel" value={bookingData.coach_phone} readOnly disabled className="bg-gray-100" />
               </div>
             </div>
 
-            <h3 className="font-semibold mt-4">Biaya & Waktu</h3>
+            {/* STATUS & LAIN-LAIN */}
+            <h3 className="font-semibold mt-4">Status & Lain-lain</h3>
             <div className="grid grid-cols-2 gap-4">
-              {/* Final Court Price */}
-              <div>
-                <Label htmlFor="final_court_price">Court Price (Rp)</Label>
-                <Input id="final_court_price" name="final_court_price" type="number" value={bookingData.final_court_price} onChange={handleChange} required />
-              </div>
-              {/* Final Coach Fee (Autofill dari dropdown coach) */}
-              <div>
-                <Label htmlFor="final_coach_fee">Coach Fee (Rp)</Label>
-                <Input id="final_coach_fee" name="final_coach_fee" type="number" value={bookingData.final_coach_fee} onChange={handleChange} required />
-              </div>
-
-              {/* Court ID */}
-              <div>
-                <Label htmlFor="court_id">Court ID</Label>
-                <Input id="court_id" name="court_id" type="number" value={bookingData.court_id} onChange={handleChange} required />
-              </div>
-              {/* Start Time */}
-              <div>
-                <Label htmlFor="start_time">Waktu Mulai</Label>
-                <Input id="start_time" name="start_time" type="datetime-local" value={bookingData.start_time} onChange={handleChange} required />
-              </div>
-            </div>
-
-            <h3 className="font-semibold mt-4">Status & Jumlah Orang</h3>
-            <div className="grid grid-cols-2 gap-4">
-              {/* Status */}
               <div>
                 <Label htmlFor="status">Status</Label>
                 <select id="status" name="status" value={bookingData.status} onChange={handleChange} className="w-full p-2 border rounded">
@@ -316,31 +461,34 @@ export default function EditBookingPage() {
                   <option value="completed">Completed</option>
                 </select>
               </div>
-              {/* Is with Photography */}
+
               <div className="flex items-center space-x-2">
-                <Input id="is_with_photography" name="is_with_photography" type="checkbox" checked={bookingData.is_with_photography} onChange={handleChange} className="h-4 w-4" />
+                <input id="is_with_photography" name="is_with_photography" type="checkbox" checked={bookingData.is_with_photography} onChange={handleChange} className="h-4 w-4" />
                 <Label htmlFor="is_with_photography">Dengan Fotografi?</Label>
               </div>
-              {/* Adult Number */}
+
               <div>
                 <Label htmlFor="adult_number">Dewasa</Label>
                 <Input id="adult_number" name="adult_number" type="number" value={bookingData.adult_number} onChange={handleChange} required />
               </div>
-              {/* Children Number */}
+
               <div>
                 <Label htmlFor="children_number">Anak-anak</Label>
                 <Input id="children_number" name="children_number" type="number" value={bookingData.children_number} onChange={handleChange} required />
               </div>
+
+              <div className="col-span-2">
+                <Label htmlFor="notes">Notes</Label>
+                <Textarea id="notes" name="notes" value={bookingData.notes} onChange={handleChange} />
+              </div>
             </div>
 
-            {error && <p className="text-red-500">{error}</p>}
-
             <div className="flex justify-between pt-4">
-              <Button type="button" variant="outline" onClick={() => router.push("/admin")}>
+              <Button type="button" variant="outline" onClick={() => router.push("/admin/dashboard")}>
                 Kembali
               </Button>
               <Button type="submit" disabled={saving}>
-                {saving ? "Saving..." : "Simpan Perubahan"}
+                {saving ? "Menyimpan..." : "Simpan Perubahan"}
               </Button>
             </div>
           </form>
