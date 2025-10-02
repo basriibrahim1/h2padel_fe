@@ -1,5 +1,3 @@
-// app/admin/add/page.tsx (Final Code dengan API CALL)
-
 "use client";
 
 import { useEffect, useState, FormEvent, useCallback } from "react";
@@ -7,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SelectWithAddAndSearch } from "@/components/shared/SelectWithAddAndSearch ";
+
+// --- INTERFACES ---
 
 interface CourtData {
   id: number;
@@ -23,13 +23,17 @@ interface CourtData {
   fixed_price: number;
 }
 
+// PersonData kini menyimpan PK Lokal (id) dan UUID Auth (user_id)
 interface PersonData {
-  id: string;
+  id: string; // PK Lokal (clients.id atau coaches.id) - Digunakan untuk FK Booking dan Select Value
+  user_id: string; // UUID Auth (profiles.id) - Digunakan untuk Operasi Auth/Profile Update
   name: string;
   phone: string;
+  email?: string;
   fixed_fee?: number;
 }
 
+// NewPersonEntry untuk data yang akan dimasukkan/diedit
 interface NewPersonEntry {
   name: string;
   phone?: string;
@@ -39,6 +43,10 @@ interface NewPersonEntry {
   fee?: number;
   email?: string;
   password?: string;
+  event?: FormEvent;
+  id?: string | number; // PK Lokal (untuk Court atau Person)
+  user_id?: string; // UUID Auth (khusus untuk Person, dikirim saat edit)
+  type?: "client" | "coach" | "court";
 }
 
 interface BookingInsert {
@@ -46,10 +54,10 @@ interface BookingInsert {
   court_name: string;
   court_address: string;
   court_maps_url: string;
-  client_id: string;
+  client_id: string; // FK ke clients.id (PK Lokal)
   client_name: string;
   client_phone: string;
-  coach_id: string;
+  coach_id: string; // FK ke coaches.id (PK Lokal)
   coach_name: string;
   coach_phone: string;
   start_time: string;
@@ -102,7 +110,10 @@ export default function AddBookingPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const autofillCourtData = useCallback((currentBooking: BookingInsert, courtId: number | "", allCourts: CourtData[]) => {
+  console.log(clients);
+
+  // Helper untuk Autofill Court
+  const autofillCourtDataHelper = useCallback((courtId: number | "", allCourts: CourtData[]) => {
     if (!courtId) return { court_name: "", court_address: "", court_maps_url: "", final_court_price: 0 };
     const court = allCourts.find((d) => d.id === courtId);
     if (court) {
@@ -116,106 +127,102 @@ export default function AddBookingPage() {
     return { court_name: "", court_address: "", court_maps_url: "", final_court_price: 0 };
   }, []);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  // -----------------------------------------------------------------------
+  // FUNGSI LOAD DATA: Mengambil PK Lokal (id) dan UUID Auth (user_id)
+  // -----------------------------------------------------------------------
+  const loadData = useCallback(async () => {
     setError(null);
     try {
-      // PERUBAHAN UTAMA: Filter data berdasarkan kolom 'role' di tabel 'profiles'
       const [clientRes, coachRes, courtRes] = await Promise.all([
-        // 1. Ambil CLIENTS: Hanya user di tabel 'clients' yang role-nya 'client'
-        supabase
-          .from("clients")
-          .select(`id, profiles!inner (full_name, phone, role)`) // !inner memastikan JOIN
-          .eq("profiles.role", "client"), // <-- FILTER KRITIS
-
-        // 2. Ambil COACHES: Hanya user di tabel 'coaches' yang role-nya 'coach'
-        supabase
-          .from("coaches")
-          .select(`id, fixed_fee, profiles!inner (full_name, phone, role)`) // !inner memastikan JOIN
-          .eq("profiles.role", "coach"), // <-- FILTER KRITIS
-
-        // 3. Ambil Courts (tetap sama)
+        // Ambil id (PK Lokal), user_id (UUID Auth), dan profiles
+        supabase.from("clients").select(`id, user_id, profiles!inner (full_name, phone, role, email)`).eq("profiles.role", "client"),
+        supabase.from("coaches").select(`id, user_id, fixed_fee, profiles!inner (full_name, phone, role, email)`).eq("profiles.role", "coach"),
         supabase.from("field_courts").select(`id, name, address, maps_url, fixed_price`),
       ]);
-
-      // --- Mapping Data ---
 
       if (clientRes.error) throw new Error(clientRes.error.message);
       if (coachRes.error) throw new Error(coachRes.error.message);
       if (courtRes.error) throw new Error(courtRes.error.message);
 
       // Mapping Clients
-      if (clientRes.data) {
-        setClients(
-          clientRes.data.map((c: any) => ({
-            id: c.id,
-            name: c.profiles?.full_name || "N/A",
-            phone: c.profiles?.phone || "",
-          }))
-        );
-      }
+      const newClients: PersonData[] = clientRes.data.map((c: any) => ({
+        id: String(c.id), // PK Lokal
+        user_id: c.user_id, // UUID Auth
+        name: c.profiles?.full_name || "N/A",
+        phone: c.profiles?.phone || "",
+        email: c.profiles?.email || "",
+      }));
+      setClients(newClients);
 
       // Mapping Coaches
-      if (coachRes.data) {
-        setCoaches(
-          coachRes.data.map((h: any) => ({
-            id: h.id,
-            name: h.profiles?.full_name || "N/A",
-            phone: h.profiles?.phone || "",
-            fixed_fee: Number(h.fixed_fee) || 0,
-          }))
-        );
-      }
+      const newCoaches: PersonData[] = coachRes.data.map((h: any) => ({
+        id: String(h.id), // PK Lokal
+        user_id: h.user_id, // UUID Auth
+        name: h.profiles?.full_name || "N/A",
+        phone: h.profiles?.phone || "",
+        email: h.profiles?.email || "",
+        fixed_fee: Number(h.fixed_fee) || 0,
+      }));
+      setCoaches(newCoaches);
 
-      // Mapping Courts
-      if (courtRes.data) {
-        setCourts(
-          courtRes.data.map((d: any) => ({
-            id: d.id,
-            court_name: d.name,
-            court_address: d.address,
-            court_maps_url: d.maps_url,
-            fixed_price: Number(d.fixed_price) || 0,
-          }))
-        );
-      }
+      // Mapping Courts (SAMA)
+      const newCourts: CourtData[] = courtRes.data.map((d: any) => ({
+        id: d.id,
+        court_name: d.name,
+        court_address: d.address,
+        court_maps_url: d.maps_url,
+        fixed_price: Number(d.fixed_price) || 0,
+      }));
+      setCourts(newCourts);
     } catch (err: any) {
       console.error("Error fetching data:", err);
       setError(err.message || "Gagal memuat data dropdown.");
-    } finally {
-      setLoading(false);
     }
-  }, [supabase]); // Pastikan supabase adalah dependency
+  }, [supabase]);
 
+  // PENTING: Gunakan useEffect HANYA untuk initial load
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  const handleAutofill = (name: "client_id" | "coach_id" | "court_id", value: string | number) => {
-    setBookingData((prev) => {
-      let updates: Partial<BookingInsert> = { [name]: value as string };
-
-      if (name === "court_id") {
-        const courtIdNum = Number(value) || "";
-        const courtUpdates = autofillCourtData(prev, courtIdNum, courts);
-        updates = { ...updates, ...courtUpdates, court_id: courtIdNum };
-      } else if (name === "client_id") {
-        const client = clients.find((c) => c.id === value);
-        updates.client_name = client?.name || "";
-        updates.client_phone = client?.phone || "";
-      } else if (name === "coach_id") {
-        const coach = coaches.find((c) => c.id === value);
-        updates.coach_name = coach?.name || "";
-        updates.coach_phone = coach?.phone || "";
-        updates.final_coach_fee = coach?.fixed_fee || 0;
-
-        if (value === "none" || !value) {
-          updates = { coach_id: "", coach_name: "", coach_phone: "", final_coach_fee: 0 };
-        }
-      }
-      return { ...prev, ...updates };
+    setLoading(true);
+    loadData().finally(() => {
+      setLoading(false);
     });
-  };
+  }, [loadData]);
+
+  // Handler untuk perubahan Select/Input biasa
+  const handleAutofill = useCallback(
+    (name: "client_id" | "coach_id" | "court_id", value: string | number) => {
+      setBookingData((prev) => {
+        let updates: Partial<BookingInsert> = { [name]: value as string };
+
+        if (name === "court_id") {
+          const courtIdNum = Number(value) || "";
+          const courtUpdates = autofillCourtDataHelper(courtIdNum, courts);
+          updates = { ...updates, ...courtUpdates, court_id: courtIdNum };
+        } else if (name === "client_id") {
+          // Cari berdasarkan PK Lokal
+          const client = clients.find((c) => c.id === value);
+          updates.client_name = client?.name || "";
+          updates.client_phone = client?.phone || "";
+        } else if (name === "coach_id") {
+          // Cari berdasarkan PK Lokal
+          const coach = coaches.find((c) => c.id === value);
+          updates.coach_name = coach?.name || "";
+          updates.coach_phone = coach?.phone || "";
+          updates.final_coach_fee = coach?.fixed_fee || 0;
+
+          if (!value) {
+            updates = { coach_id: "", coach_name: "", coach_phone: "", final_coach_fee: 0 };
+          }
+        }
+        // Pastikan ID di-set sebagai string untuk client/coach (PK Lokal)
+        if (name === "coach_id" || name === "client_id") {
+          updates[name] = (value as string) || "";
+        }
+        return { ...prev, ...updates };
+      });
+    },
+    [courts, clients, coaches, autofillCourtDataHelper]
+  );
 
   const handleChange = (name: keyof BookingInsert, value: any) => {
     if (name === "client_id" || name === "coach_id" || name === "court_id") {
@@ -227,60 +234,222 @@ export default function AddBookingPage() {
     setBookingData((prev) => ({ ...prev, [name]: finalValue }));
   };
 
-  // FUNGSI 1: Menangani Sign Up (Client/Coach) - MEMANGGIL API SERVER
-  const handleAddNewPerson = useCallback(
-    async (type: "client" | "coach", newEntry: NewPersonEntry) => {
-      if (!newEntry.password || !newEntry.email) {
-        throw new Error("Email dan Password wajib diisi untuk registrasi.");
+  const handleEdit = useCallback(
+    async (updatedEntry: NewPersonEntry) => {
+      console.log("🟢 handleEdit start →", updatedEntry);
+
+      // Tentukan targetId sesuai tipe
+      let targetId: string | number | null | undefined = null;
+
+      if (updatedEntry.type === "court") {
+        targetId = updatedEntry.id; // PK number
+      } else {
+        targetId = updatedEntry.user_id || null; // UUID string (user_id)
+      }
+
+      const type = updatedEntry.type;
+
+      console.log("🟡 handleEdit resolved targetId:", targetId, "type:", type);
+
+      if (!targetId || !type) {
+        console.error("❌ handleEdit gagal: missing targetId/type", {
+          entry: updatedEntry,
+          targetId,
+          type,
+        });
+        throw new Error("ID atau Tipe data tidak ditemukan untuk diupdate.");
       }
 
       try {
-        // Panggil Route Handler
-        const response = await fetch("/api/admin/create-user", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            email: newEntry.email,
-            password: newEntry.password,
-            fullName: newEntry.name,
-            phone: newEntry.phone,
-            role: type,
-            fixedFee: newEntry.fee,
-          }),
-        });
+        if (type === "court") {
+          const courtId = Number(targetId);
+          console.log("✏️ Update COURT dengan id:", courtId);
 
-        const result = await response.json();
+          const { error: courtError } = await supabase
+            .from("field_courts")
+            .update({
+              name: updatedEntry.name,
+              address: updatedEntry.address,
+              maps_url: updatedEntry.maps_url,
+              fixed_price: updatedEntry.fixed_price,
+            })
+            .eq("id", courtId);
 
-        if (!response.ok || !result.success) {
-          let errorMessage = result.message || "Gagal membuat pengguna melalui API.";
-          if (errorMessage.includes("duplicate key value")) {
-            errorMessage = "User sudah terdaftar dengan ID atau Email ini (Duplicate Key).";
+          if (courtError) throw courtError;
+
+          // ** Update State Courts (Agar Combobox Ter-update) **
+          const updatedCourtData: CourtData = {
+            id: courtId,
+            court_name: updatedEntry.name,
+            court_address: updatedEntry.address || "",
+            court_maps_url: updatedEntry.maps_url || "",
+            fixed_price: updatedEntry.fixed_price || 0,
+          };
+
+          setCourts((prevCourts) => prevCourts.map((c) => (c.id === courtId ? updatedCourtData : c)));
+
+          // ** Autofill Court **
+          if (bookingData.court_id === courtId) {
+            setBookingData((prev) => ({
+              ...prev,
+              court_name: updatedEntry.name,
+              final_court_price: updatedEntry.fixed_price || 0,
+              court_address: updatedEntry.address || "",
+              court_maps_url: updatedEntry.maps_url || "",
+            }));
           }
-          throw new Error(errorMessage);
+        } else {
+          const userId = String(targetId);
+          const pkLokal = String(updatedEntry.id); // PK Lokal dari clients/coaches
+
+          console.log("✏️ Update USER dengan userId:", userId);
+
+          // Panggil API untuk update Auth dan Profile/Role data
+          const response = await fetch("/api/admin/update-user", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userId,
+              fullName: updatedEntry.name,
+              phone: updatedEntry.phone,
+              email: updatedEntry.email,
+              password: updatedEntry.password,
+              role: type,
+              fixedFee: updatedEntry.fee,
+            }),
+          });
+
+          const result = await response.json();
+          console.log("🔵 update-user API result:", result);
+
+          if (!response.ok || !result.success) {
+            throw new Error(result.message || "Gagal mengupdate pengguna melalui API.");
+          }
+
+          // ** Update State Lokal agar UI Reaktif **
+          const updatedPersonData: PersonData = {
+            id: pkLokal,
+            user_id: userId,
+            name: updatedEntry.name,
+            phone: updatedEntry.phone || "",
+            email: updatedEntry.email || result.oldEmail || "", // Gunakan email baru, atau email lama dari response jika ada
+            fixed_fee: type === "coach" ? updatedEntry.fee || 0 : undefined,
+          };
+
+          if (type === "client") {
+            setClients((prev) => prev.map((c) => (c.id === pkLokal ? updatedPersonData : c)));
+
+            // ** Autofill Client **
+            if (bookingData.client_id === pkLokal) {
+              setBookingData((prev) => ({
+                ...prev,
+                client_name: updatedEntry.name,
+                client_phone: updatedEntry.phone || "",
+              }));
+            }
+          } else if (type === "coach") {
+            setCoaches((prev) => prev.map((h) => (h.id === pkLokal ? updatedPersonData : h)));
+
+            // ** Autofill Coach **
+            if (bookingData.coach_id === pkLokal) {
+              setBookingData((prev) => ({
+                ...prev,
+                coach_name: updatedEntry.name,
+                coach_phone: updatedEntry.phone || "",
+                final_coach_fee: updatedEntry.fee || 0,
+              }));
+            }
+          }
         }
 
-        const newUserId = result.userId;
-        if (!newUserId) {
-          throw new Error("API berhasil, tetapi ID pengguna tidak dikembalikan.");
-        }
-
-        toast.success(`${type === "client" ? "Client" : "Coach"} baru berhasil ditambahkan: ${newEntry.name}`);
-
-        // Muat ulang data & Autopilih
-        await fetchData();
-        handleAutofill(type === "client" ? "client_id" : "coach_id", newUserId);
+        toast.success(`${type === "court" ? "Court" : type === "client" ? "Client" : "Coach"} berhasil diupdate!`);
       } catch (error: any) {
-        console.error("Error adding new person via API:", error);
-        toast.error(`Gagal menambahkan ${type}: ${error.message}`);
+        console.error("🔥 Error editing data:", error);
         throw error;
       }
     },
-    [fetchData, handleAutofill]
+    [supabase, bookingData]
   );
 
-  // FUNGSI 2: Menangani Penambahan Court (Langsung ke Database)
+  // --- AKHIR FUNGSI EDIT ---
+
+  // -----------------------------------------------------------------------
+  // FUNGSI ADD NEW PERSON: Menangkap PK Lokal Baru (rolePKId)
+  // -----------------------------------------------------------------------
+  const handleAddNewPerson = useCallback(async (type: "client" | "coach", newEntry: NewPersonEntry) => {
+    if (!newEntry.password || !newEntry.email) {
+      throw new Error("Email dan Password wajib diisi untuk registrasi.");
+    }
+
+    try {
+      const response = await fetch("/api/admin/create-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newEntry.email,
+          password: newEntry.password,
+          fullName: newEntry.name,
+          phone: newEntry.phone,
+          role: type,
+          fixedFee: newEntry.fee,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        let errorMessage = result.message || "Gagal membuat pengguna melalui API.";
+        if (errorMessage.includes("duplicate key value")) {
+          errorMessage = "User sudah terdaftar dengan ID atau Email ini (Duplicate Key).";
+        }
+        throw new Error(errorMessage);
+      }
+
+      const newUserId = result.userId; // UUID Auth
+      const newRolePKId = result.rolePKId; // PK Lokal Baru
+
+      if (!newUserId || !newRolePKId) {
+        throw new Error("API berhasil, tetapi ID pengguna (UUID Auth atau PK Lokal) tidak dikembalikan.");
+      }
+
+      toast.success(`${type === "client" ? "Client" : "Coach"} baru berhasil ditambahkan: ${newEntry.name}`);
+
+      // Update State Clients/Coaches secara manual
+      const newPersonData: PersonData = {
+        id: newRolePKId, // PK Lokal sebagai ID utama di frontend
+        user_id: newUserId, // UUID Auth
+        name: newEntry.name,
+        phone: newEntry.phone || "",
+        email: newEntry.email,
+        fixed_fee: newEntry.fee,
+      };
+
+      setBookingData((prev) => {
+        if (type === "client") {
+          setClients((prevClients) => [...prevClients, newPersonData]);
+          // Autopilih dengan PK Lokal
+          return { ...prev, client_id: newRolePKId, client_name: newPersonData.name, client_phone: newPersonData.phone };
+        } else {
+          // type === "coach"
+          setCoaches((prevCoaches) => [...prevCoaches, newPersonData]);
+          // Autopilih dengan PK Lokal
+          return {
+            ...prev,
+            coach_id: newRolePKId,
+            coach_name: newPersonData.name,
+            coach_phone: newPersonData.phone,
+            final_coach_fee: newPersonData.fixed_fee || 0,
+          };
+        }
+      });
+    } catch (error: any) {
+      console.error("Error adding new person via API:", error);
+      toast.error(`Gagal menambahkan ${type}: ${error.message}`);
+      throw error;
+    }
+  }, []);
+
+  // FUNGSI 2: Menangani Penambahan Court (Logika SAMA)
   const handleAddNewCourt = useCallback(
     async (newEntry: NewPersonEntry) => {
       if (!newEntry.name || !newEntry.address || !newEntry.fixed_price) {
@@ -295,25 +464,45 @@ export default function AddBookingPage() {
       };
 
       try {
-        const { data: courtData, error: courtError } = await supabase.from("field_courts").insert(courtInsertData).select("id").single();
+        const { data: courtData, error: courtError } = await supabase.from("field_courts").insert(courtInsertData).select("id, name, address, maps_url, fixed_price").single();
 
         if (courtError) throw courtError;
         if (!courtData?.id) throw new Error("Gagal mendapatkan ID Court baru.");
 
+        const newCourtId = courtData.id;
+
         toast.success(`Court baru berhasil ditambahkan: ${newEntry.name}`);
 
-        await fetchData();
-        handleAutofill("court_id", courtData.id);
+        // Update State Courts secara manual
+        const newCourtData: CourtData = {
+          id: newCourtId,
+          court_name: courtData.name,
+          court_address: courtData.address,
+          court_maps_url: courtData.maps_url,
+          fixed_price: Number(courtData.fixed_price) || 0,
+        };
+
+        setCourts((prevCourts) => [...prevCourts, newCourtData]);
+
+        // Autopilih Court baru secara manual
+        setBookingData((prev) => ({
+          ...prev,
+          court_id: newCourtId,
+          court_name: newCourtData.court_name,
+          court_address: newCourtData.court_address,
+          court_maps_url: newCourtData.court_maps_url,
+          final_court_price: newCourtData.fixed_price,
+        }));
       } catch (error: any) {
         console.error("Error adding new court:", error);
         toast.error(`Gagal menambahkan Court: ${error.message}`);
         throw error;
       }
     },
-    [supabase, fetchData, handleAutofill]
+    [supabase]
   );
 
-  // Fungsi wrapper
+  // Fungsi wrapper untuk Add (SAMA)
   const handleAddNew = useCallback(
     async (type: "client" | "coach" | "court", entry: NewPersonEntry) => {
       if (type === "court") {
@@ -325,10 +514,13 @@ export default function AddBookingPage() {
     [handleAddNewCourt, handleAddNewPerson]
   );
 
+  // FUNGSI SAVE BOOKING (SAMA)
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
-    if (!bookingData.client_id || !bookingData.court_id || !bookingData.start_time) {
-      setError("Client, Court, dan Waktu Mulai wajib diisi.");
+
+    // VALIDASI WAJIB: Client, Court, Waktu, dan COACH harus diisi.
+    if (!bookingData.client_id || !bookingData.court_id || !bookingData.start_time || !bookingData.coach_id) {
+      setError("Client, Court, Waktu Mulai, dan Coach wajib diisi.");
       return;
     }
 
@@ -336,11 +528,13 @@ export default function AddBookingPage() {
     setError(null);
 
     const { court_name, court_address, court_maps_url, ...dataToInsert } = bookingData;
+
+    // client_id dan coach_id adalah PK Lokal (string)
     const finalInsert = {
       ...dataToInsert,
       court_id: dataToInsert.court_id === "" ? null : Number(dataToInsert.court_id),
       client_id: dataToInsert.client_id || null,
-      coach_id: dataToInsert.coach_id || null,
+      coach_id: dataToInsert.coach_id,
       is_with_photography: Boolean(dataToInsert.is_with_photography),
       duration: Number(dataToInsert.duration),
     };
@@ -349,7 +543,7 @@ export default function AddBookingPage() {
     setSaving(false);
 
     if (insertError) {
-      setError(`Gagal menyimpan booking: ${insertError.message}`);
+      setError(`Gagal menyimpan booking: ${insertError.message}. Pastikan ID Client/Coach (PK Lokal) yang dipilih benar-benar ada di tabel relasi.`);
       return;
     }
 
@@ -360,25 +554,33 @@ export default function AddBookingPage() {
   if (loading) return <div className="p-6 text-center text-lg font-medium">Memuat data dropdown...</div>;
   if (error && !saving) return <div className="p-6 text-center text-red-500 text-lg font-medium">Error: {error}</div>;
 
+  // Mapping Options (Menggunakan PK Lokal sebagai Value)
   const clientOptions = clients.map((c) => ({
-    value: c.id,
+    value: c.id, // PK Lokal (clients.id)
     label: `${c.name} (${c.phone})`,
-    data: c,
+    data: c, // Menyertakan user_id (UUID Auth) untuk edit
   }));
 
   const coachOptions = coaches.map((h) => ({
-    value: h.id,
+    value: h.id, // PK Lokal (coaches.id)
     label: `${h.name} (Fee: Rp. ${formatRupiah(h.fixed_fee)})`,
-    data: h,
+    data: h, // Menyertakan user_id (UUID Auth) untuk edit
   }));
 
   const courtOptions = courts.map((d) => ({
-    value: d.id,
+    value: String(d.id),
     label: `${d.court_name} (Rp. ${formatRupiah(d.fixed_price)})`,
-    data: d,
+    data: {
+      id: d.id,
+      name: d.court_name,
+      address: d.court_address,
+      maps_url: d.court_maps_url,
+      fixed_price: d.fixed_price,
+    },
   }));
 
   return (
+    // ... (Sisa JSX Form SAMA)
     <div className="p-6 max-w-2xl mx-auto">
       <h1 className="text-3xl font-bold mb-6 text-gray-800">Tambah Booking Baru</h1>
       <Card className="shadow-xl">
@@ -393,9 +595,10 @@ export default function AddBookingPage() {
                     label="Pilih Court"
                     placeholder="-- Cari atau Tambah Court --"
                     options={courtOptions}
-                    selectedValue={bookingData.court_id}
-                    onValueChange={(value) => handleChange("court_id", Number(value))}
+                    selectedValue={String(bookingData.court_id)}
+                    onValueChange={(value) => handleChange("court_id", value)}
                     onAddNew={(newEntry) => handleAddNew("court", newEntry)}
+                    onEdit={(updatedEntry) => handleEdit({ ...updatedEntry, type: "court" })}
                     type="court"
                   />
                 </div>
@@ -454,16 +657,19 @@ export default function AddBookingPage() {
                   selectedValue={bookingData.client_id}
                   onValueChange={(value) => handleChange("client_id", value)}
                   onAddNew={(newEntry) => handleAddNew("client", newEntry)}
+                  onEdit={(updatedEntry) => handleEdit({ ...updatedEntry, type: "client" })}
                   type="client"
                 />
 
+                {/* Coach Select - Tanpa Opsi "None" */}
                 <SelectWithAddAndSearch
-                  label="Pilih Coach (Opsional)"
+                  label="Pilih Coach (Wajib)"
                   placeholder="-- Cari atau Tambah Coach --"
-                  options={[{ value: "none", label: "-- Tanpa Coach --", data: {} }, ...coachOptions]}
-                  selectedValue={bookingData.coach_id || "none"}
+                  options={coachOptions}
+                  selectedValue={bookingData.coach_id}
                   onValueChange={(value) => handleChange("coach_id", value)}
                   onAddNew={(newEntry) => handleAddNew("coach", newEntry)}
+                  onEdit={(updatedEntry) => handleEdit({ ...updatedEntry, type: "coach" })}
                   type="coach"
                 />
 

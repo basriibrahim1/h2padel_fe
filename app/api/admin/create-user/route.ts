@@ -1,11 +1,10 @@
-// app/api/admin/create-user/route.ts (Final Code dengan SQL Function)
+// app/api/admin/create-user/route.ts (Direvisi untuk Rollback)
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export async function POST(req: Request) {
   try {
-    // Pastikan Anda menerima fixedFee
     const { email, password, fullName, phone, role, fixedFee } = await req.json();
 
     if (!email || !password || !fullName || !role) {
@@ -18,12 +17,11 @@ export async function POST(req: Request) {
       );
     }
 
-    // 1. Buat User di Supabase Auth (Service Role)
+    // --- 1. Buat User di Supabase Auth (Service Role) ---
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
-      // NOTE: Kita tidak perlu mengisi user_metadata, karena kita mengisi Profiles melalui SQL Function
     });
 
     if (authError) {
@@ -49,7 +47,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Panggil SQL Function untuk mengisi profiles dan tabel relasi (clients/coaches)
+    // --- 2. Panggil SQL Function untuk mengisi profiles dan tabel relasi ---
     const feeValue = fixedFee === undefined || fixedFee === null ? 0 : fixedFee;
 
     const { error: fnError } = await supabaseAdmin.rpc("create_user_profile_and_role", {
@@ -63,20 +61,29 @@ export async function POST(req: Request) {
 
     if (fnError) {
       console.error("SQL Function (create_user_profile_and_role) Gagal:", fnError);
-      // Error ini berasal dari database constraint di function
+
+      // V KRITIS: ROLLBACK MANUAL - Hapus user yang baru dibuat jika insert DB gagal V
+      try {
+        await supabaseAdmin.auth.admin.deleteUser(newUserId);
+        console.log(`Rollback sukses: User Auth ${newUserId} berhasil dihapus.`);
+      } catch (deleteError: any) {
+        console.error("Rollback Gagal: Gagal menghapus user Auth setelah DB error:", deleteError);
+      }
+      // A KRITIS: ROLLBACK MANUAL - Hapus user yang baru dibuat jika insert DB gagal A
+
       return NextResponse.json(
         {
           success: false,
-          message: `Database error via SQL Function: ${fnError.message}`,
+          message: `Database error: ${fnError.message}. User Auth telah dihapus (rollback).`,
         },
         { status: 500 }
       );
     }
 
-    // 3. Respon Sukses
+    // --- 3. Respon Sukses ---
     return NextResponse.json({
       success: true,
-      message: "Pengguna baru berhasil dibuat dan DB relasi terisi.",
+      message: `${role} baru berhasil dibuat dan DB relasi terisi.`,
       userId: newUserId,
     });
   } catch (err: any) {

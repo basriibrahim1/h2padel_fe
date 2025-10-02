@@ -322,7 +322,7 @@ export default function AdminDashboard() {
                           {b.notes || <span className="text-gray-400">-</span>}
                         </TableCell>
                         <TableCell className="text-center space-x-2 whitespace-nowrap">
-                          <Button variant="outline" size="sm" onClick={() => router.push(`/admin/booking/${b.id}`)}>
+                          <Button variant="outline" size="sm" onClick={() => router.push(`/admin/booking/edit/${b.id}`)}>
                             Edit
                           </Button>
                           <Button variant="destructive" size="sm" onClick={() => handleDeleteBooking(b.id)} disabled={loadingDelete === b.id}>
