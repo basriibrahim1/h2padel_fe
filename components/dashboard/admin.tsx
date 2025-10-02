@@ -226,7 +226,7 @@ export default function AdminDashboard() {
             <p className="text-sm text-gray-500">Kelola semua jadwal booking Anda.</p>
           </div>
         </div>
-        <Button onClick={() => router.push("/admin/add-booking")} className="bg-green-600 hover:bg-green-700 font-semibold shadow-md">
+        <Button onClick={() => router.push("/admin/booking/add-booking")} className="bg-green-600 hover:bg-green-700 font-semibold shadow-md">
           + Tambah Booking Baru
         </Button>
       </div>
